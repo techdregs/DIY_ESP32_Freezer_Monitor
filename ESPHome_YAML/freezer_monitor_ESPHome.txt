@@ -1,0 +1,247 @@
+esphome:
+  name: freezer-monitor
+  friendly_name: Freezer Monitor
+  on_boot:
+    priority: 500
+    then:
+      - switch.turn_on: ntc_power
+      - delay: 500ms
+      - logger.log: "Boot: settling ADCs (discard first read, then 4 reads @5ms)…"
+      - wifi.enable:
+      - wait_until:
+         condition: wifi.connected
+         timeout: 15s
+      - wait_until:
+         condition: api.connected
+         timeout: 10s
+      - component.update: wifi_strength
+      - delay: 1s
+      - script.execute: test_ota #check for updates and otherwise deep sleep, see: https://youtu.be/jfpaSAlecMk
+  on_shutdown:
+    then:
+      - switch.turn_off: ntc_power
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "yourkey"
+
+ota:
+  - platform: esphome
+    password: "ota_pwd"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Freezer-Monitor Fallback Hotspot"
+    password: "fallback_pwd"
+
+  enable_on_boot: false
+  fast_connect: true
+
+captive_portal:
+
+switch:
+  - platform: gpio
+    pin: GPIO6 #pin controls power to NTC thermistors
+    id: ntc_power
+    internal: true
+    restore_mode: ALWAYS_ON
+
+sensor:
+  - platform: adc
+    name: "Battery Voltage"
+    id: battery_voltage
+    pin: GPIO3
+    attenuation: 12dB
+    accuracy_decimals: 3
+    update_interval: 1s
+    filters:
+      - multiply: 1.381 # scale voltage for divider, adjust for calibration
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 5
+
+  - platform: template
+    name: "Battery Percentage"
+    id: battery_percentage
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      float v = id(battery_voltage).state;
+      if (v < 3.5) v = 3.5;
+      if (v > 4.2) v = 4.2;
+      float k = 20.0;
+      float v0 = 3.8;
+      float soc = 100.0 / (1.0 + exp(-k * (v - v0)));
+      return soc;
+
+  # Thermistor ADC Inputs
+  # Thermistor T1
+  - platform: adc
+    pin: GPIO0
+    id: adc_t1
+    attenuation: 12db
+    update_interval: 1s
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 5
+
+  - platform: resistance
+    id: resistance_t1
+    sensor: adc_t1
+    configuration: UPSTREAM
+    resistor: 750kOhm
+    name: "T1 Resistance"
+
+  - platform: ntc
+    sensor: resistance_t1
+    name: "T1"
+    id: t1_temp
+    accuracy_decimals: 2
+    calibration: #three point calibration, adjust as desired
+      - 970.0kOhm -> -24°C
+      - 102.0kOhm -> 24.4°C
+      - 40.3kOhm -> 48°C
+
+  # Thermistor T2
+  - platform: adc
+    pin: GPIO1
+    id: adc_t2
+    attenuation: 12db
+    update_interval: 1s
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 5
+
+  - platform: resistance
+    id: resistance_t2
+    sensor: adc_t2
+    configuration: UPSTREAM
+    resistor: 750kOhm
+    name: "T2 Resistance"
+
+  - platform: ntc
+    sensor: resistance_t2
+    name: "T2"
+    id: t2_temp
+    accuracy_decimals: 2
+    calibration:
+      - 970.0kOhm -> -24°C
+      - 102.0kOhm -> 24.4°C
+      - 40.3kOhm -> 48°C
+
+
+  # Thermistor T3
+  - platform: adc
+    pin: GPIO4
+    id: adc_t3
+    attenuation: 12db
+    update_interval: 1s
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 5
+
+  - platform: resistance
+    id: resistance_t3
+    sensor: adc_t3
+    configuration: UPSTREAM
+    resistor: 750kOhm
+    name: "T3 Resistance"
+
+  - platform: ntc
+    sensor: resistance_t3
+    name: "T3"
+    id: t3_temp
+    accuracy_decimals: 2
+    calibration:
+      - 970.0kOhm -> -24°C
+      - 102.0kOhm -> 24.4°C
+      - 40.3kOhm -> 48°C
+
+
+  # Thermistor T4, does not function due to ADC2/WiFi interaction
+  - platform: adc
+    pin: GPIO5
+    id: adc_t4
+    attenuation: 12db
+    update_interval: 1s
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 5
+
+  - platform: resistance
+    id: resistance_t4
+    sensor: adc_t4
+    configuration: UPSTREAM
+    resistor: 750kOhm
+    name: "T4 Resistance"
+
+  - platform: ntc
+    sensor: resistance_t4
+    name: "T4"
+    id: t4_temp
+    accuracy_decimals: 2
+    calibration:
+      - 970.0kOhm -> -24°C
+      - 102.0kOhm -> 24.4°C
+      - 40.3kOhm -> 48°C
+
+  - platform: wifi_signal
+    id: wifi_strength
+    name: "WiFi Signal Sensor"
+    update_interval: 1s
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 5
+
+binary_sensor:
+  - platform: status
+    name: "Status"
+  - platform: homeassistant
+    name: "OTA Mode"
+    id: otamode
+    entity_id: input_boolean.freemon_ota_mode
+
+deep_sleep: #modify to adjust sleep/runtime
+  id: gotosleep
+  run_duration: 15s
+  sleep_duration: 30s #30s for testing, adjust as desired
+
+button:
+  - platform: restart
+    name: "Restart"
+
+script:
+  - id: test_ota
+    mode: queued
+    then:
+      - logger.log: "Checking OTA Mode"
+      - if:
+          condition:
+            binary_sensor.is_on: otamode
+          then:
+            - logger.log: 'OTA Mode ON'
+            - deep_sleep.prevent: gotosleep
+          else:
+            - logger.log: 'OTA Mode OFF'
+            - deep_sleep.allow: gotosleep
+      - delay: 1s
+      - script.execute: test_ota
